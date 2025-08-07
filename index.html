@@ -371,12 +371,13 @@
         <div class="upload-area" id="uploadArea">
             <div class="upload-text">
                 📷 點擊上傳照片或直接拖拽照片到這裡<br>
-                <small>支援 JPG, PNG, WEBP 等圖片格式</small>
+                <small>支援 JPG, PNG, WEBP 等圖片格式</small><br>
+                <small style="color: #888;">💡 拍照小貼士：光線充足、字跡清楚、背景單純</small>
             </div>
             <button class="btn upload-btn" onclick="document.getElementById('fileInput').click()">
                 📸 拍照/選擇照片
             </button>
-            <input type="file" id="fileInput" class="file-input" accept="image/*" capture="environment">
+            <input type="file" id="fileInput" class="file-input" accept="image/*">
         </div>
 
         <div class="preview-container" id="previewContainer"></div>
@@ -490,63 +491,219 @@
             
             progressContainer.style.display = 'block';
             
-            // 使用 Tesseract.js 進行 OCR
+            // 圖片品質檢查和預處理
+            const img = new Image();
+            img.onload = function() {
+                // 檢查圖片解析度
+                if (img.width < 300 || img.height < 300) {
+                    showWarning('圖片解析度較低，可能影響識別準確度。建議使用更高畫質的照片。');
+                }
+                
+                // 使用多種識別策略提高成功率
+                performAdvancedOCR(imageFile);
+            };
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(imageFile);
+        }
+
+        function performAdvancedOCR(imageFile) {
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            
+            // 使用進階 OCR 設定
+            const ocrOptions = {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        const progress = Math.round(m.progress * 100);
+                        progressFill.style.width = progress + '%';
+                        progressText.textContent = `正在識別文字... ${progress}%`;
+                    }
+                },
+                // 優化 OCR 參數
+                tessedit_pageseg_mode: 6, // 統一文字區塊
+                tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億圓元角分台幣美金日幣韓幣人民幣港幣新台幣NT$USD¥￥$€£¢₩₨₪₫₡₦₨₹₱₡₨₹₵₴₸₼₽₿＋－×÷＝（）［］｛｝．，、；：！？「」『』【】〈〉《》〔〕',
+                tessedit_ocr_engine_mode: 3 // 使用最佳引擎
+            };
+            
+            // 多語言識別策略
+            const languages = ['chi_tra+eng', 'chi_sim+eng', 'eng'];
+            let currentLangIndex = 0;
+            
+            function tryOCR(langIndex) {
+                if (langIndex >= languages.length) {
+                    // 所有語言都試過了，使用基本模式
+                    performFallbackOCR(imageFile);
+                    return;
+                }
+                
+                progressText.textContent = `嘗試識別模式 ${langIndex + 1}/${languages.length}...`;
+                
+                Tesseract.recognize(
+                    imageFile,
+                    languages[langIndex],
+                    ocrOptions
+                ).then(({ data: { text, confidence } }) => {
+                    
+                    // 檢查識別信心度
+                    console.log(`識別信心度: ${confidence}%, 語言: ${languages[langIndex]}`);
+                    
+                    if (confidence > 30 && text.trim().length > 5) {
+                        // 識別成功
+                        recognizedText = text;
+                        progressText.textContent = '識別完成！正在整理資料...';
+                        progressFill.style.width = '100%';
+                        
+                        setTimeout(() => {
+                            processRecognizedText(text, confidence);
+                            document.getElementById('progressContainer').style.display = 'none';
+                        }, 1000);
+                    } else {
+                        // 嘗試下一個語言模式
+                        tryOCR(langIndex + 1);
+                    }
+                    
+                }).catch(err => {
+                    console.error(`OCR錯誤 (${languages[langIndex]}):`, err);
+                    tryOCR(langIndex + 1);
+                });
+            }
+            
+            tryOCR(0);
+        }
+
+        function performFallbackOCR(imageFile) {
+            const progressText = document.getElementById('progressText');
+            progressText.textContent = '使用備用識別模式...';
+            
+            // 最基本的 OCR 嘗試
             Tesseract.recognize(
                 imageFile,
-                'chi_tra+eng', // 支援繁體中文和英文
+                'eng',
                 {
                     logger: m => {
                         if (m.status === 'recognizing text') {
                             const progress = Math.round(m.progress * 100);
-                            progressFill.style.width = progress + '%';
-                            progressText.textContent = `正在識別文字... ${progress}%`;
+                            document.getElementById('progressFill').style.width = progress + '%';
                         }
-                    }
+                    },
+                    tessedit_pageseg_mode: 6
                 }
             ).then(({ data: { text } }) => {
-                recognizedText = text;
-                progressText.textContent = '識別完成！正在整理資料...';
-                progressFill.style.width = '100%';
                 
-                setTimeout(() => {
-                    processRecognizedText(text);
-                    progressContainer.style.display = 'none';
-                }, 1000);
+                if (text.trim().length > 0) {
+                    recognizedText = text;
+                    progressText.textContent = '識別完成（備用模式）！';
+                    
+                    setTimeout(() => {
+                        processRecognizedText(text, 20); // 低信心度標記
+                        document.getElementById('progressContainer').style.display = 'none';
+                    }, 1000);
+                } else {
+                    handleOCRFailure();
+                }
                 
             }).catch(err => {
-                console.error('OCR錯誤:', err);
-                showError('圖片識別失敗，請確保圖片清晰且包含文字內容。');
-                progressContainer.style.display = 'none';
+                console.error('所有OCR嘗試都失敗:', err);
+                handleOCRFailure();
             });
         }
 
-        function processRecognizedText(text) {
+        function handleOCRFailure() {
+            document.getElementById('progressContainer').style.display = 'none';
+            
+            const failureHtml = `
+                <div class="error-message">
+                    <h4>📷 識別遇到困難</h4>
+                    <p><strong>可能原因：</strong></p>
+                    <ul style="margin: 10px 0; padding-left: 20px;">
+                        <li>手寫字跡過於潦草或模糊</li>
+                        <li>照片光線不足或過度曝光</li>
+                        <li>文字太小或拍攝距離過遠</li>
+                        <li>背景複雜干擾識別</li>
+                    </ul>
+                    <p><strong>💡 改善建議：</strong></p>
+                    <ol style="margin: 10px 0; padding-left: 20px;">
+                        <li>確保充足光線，避免陰影</li>
+                        <li>手寫字盡量工整清楚</li>
+                        <li>拍攝時保持手機穩定</li>
+                        <li>讓文字佔據照片大部分區域</li>
+                        <li>使用單純背景（如白紙）</li>
+                    </ol>
+                </div>
+                <div style="text-align: center; margin: 20px 0;">
+                    <button class="btn upload-btn" onclick="createManualEntry()">
+                        ✏️ 手動輸入資料
+                    </button>
+                    <button class="btn upload-btn" onclick="resetSystem()">
+                        📷 重新拍照
+                    </button>
+                </div>
+            `;
+            
+            document.getElementById('previewContainer').innerHTML += failureHtml;
+        }
+
+        function processRecognizedText(text, confidence = 100) {
             document.getElementById('recognizedText').textContent = text;
+            
+            // 顯示識別信心度
+            const confidenceHtml = `
+                <div style="background: ${confidence > 70 ? '#d4edda' : confidence > 40 ? '#fff3cd' : '#f8d7da'}; 
+                           padding: 10px; border-radius: 5px; margin: 10px 0; text-align: center;">
+                    <strong>識別信心度: ${confidence.toFixed(1)}%</strong>
+                    ${confidence > 70 ? '✅ 識別結果較可靠' : 
+                      confidence > 40 ? '⚠️ 識別結果中等，請檢查' : 
+                      '❌ 識別結果不太可靠，建議手動確認'}
+                </div>
+            `;
+            
+            document.getElementById('recognizedText').insertAdjacentHTML('afterend', confidenceHtml);
             
             // 智能解析文字為結構化資料
             const lines = text.split('\n').filter(line => line.trim());
             const data = [];
             
+            if (lines.length === 0) {
+                showError('未識別到任何文字內容，請嘗試重新拍照或手動輸入。');
+                handleOCRFailure();
+                return;
+            }
+            
             // 嘗試識別不同的資料格式
             lines.forEach((line, index) => {
                 const trimmedLine = line.trim();
-                if (trimmedLine) {
+                if (trimmedLine && trimmedLine.length > 0) {
                     // 嘗試解析數字
                     const numbers = trimmedLine.match(/\d+(?:\.\d+)?/g);
                     const hasNumbers = numbers && numbers.length > 0;
                     
-                    // 創建資料行
-                    const row = {
-                        '序號': index + 1,
-                        '原始內容': trimmedLine,
-                        '包含數字': hasNumbers ? '是' : '否',
-                        '數字總和': hasNumbers ? numbers.reduce((sum, num) => sum + parseFloat(num), 0).toFixed(2) : '0',
-                        '字符長度': trimmedLine.length
-                    };
+                    // 清理無意義的字符
+                    const cleanedLine = trimmedLine.replace(/[^\w\u4e00-\u9fff\d\s\.\,\-\+\=\(\)]/g, '').trim();
                     
-                    data.push(row);
+                    if (cleanedLine.length > 0) {
+                        const row = {
+                            '序號': index + 1,
+                            '原始內容': cleanedLine,
+                            '包含數字': hasNumbers ? '是' : '否',
+                            '數字總和': hasNumbers ? numbers.reduce((sum, num) => sum + parseFloat(num), 0).toFixed(2) : '0',
+                            '字符長度': cleanedLine.length,
+                            '信心度': `${confidence.toFixed(1)}%`
+                        };
+                        
+                        data.push(row);
+                    }
                 }
             });
+            
+            if (data.length === 0) {
+                showError('處理後沒有有效的資料行，請檢查照片內容或手動輸入。');
+                handleOCRFailure();
+                return;
+            }
             
             processedData = data;
             displayDataTable(data);
@@ -555,7 +712,14 @@
             document.getElementById('resultContainer').setAttribute('data-print-date', new Date().toLocaleString('zh-TW'));
             
             document.getElementById('resultContainer').style.display = 'block';
-            showSuccess('資料識別和整理完成！您可以下載、儲存或列印結果。');
+            
+            const successMessage = confidence > 70 ? 
+                '資料識別和整理完成！識別結果較可靠。' : 
+                confidence > 40 ?
+                '資料識別完成！請檢查識別結果的準確性。' :
+                '資料識別完成！識別結果不太可靠，建議仔細檢查。';
+                
+            showSuccess(successMessage);
         }
 
         function displayDataTable(data) {
@@ -802,6 +966,76 @@
             setTimeout(() => {
                 errorDiv.remove();
             }, 5000);
+        }
+
+        function createManualEntry() {
+            const manualEntryHtml = `
+                <div id="manualEntryContainer" style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin: 20px 0;">
+                    <h3>✏️ 手動輸入資料</h3>
+                    <p>請將手寫內容逐行輸入下方文字框：</p>
+                    
+                    <div style="margin: 15px 0;">
+                        <label for="manualText" style="display: block; margin-bottom: 5px; font-weight: bold;">輸入識別內容：</label>
+                        <textarea id="manualText" rows="8" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px;" 
+                                placeholder="請輸入手寫內容，每行一個項目...&#10;例如：&#10;項目1 100&#10;項目2 250&#10;項目3 75"></textarea>
+                    </div>
+                    
+                    <div style="margin: 15px 0;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">快速範本：</label>
+                        <button class="btn" style="background: #6c757d; color: white; margin: 5px;" onclick="useTemplate('expense')">
+                            💰 支出記錄
+                        </button>
+                        <button class="btn" style="background: #6c757d; color: white; margin: 5px;" onclick="useTemplate('inventory')">
+                            📦 庫存清單
+                        </button>
+                        <button class="btn" style="background: #6c757d; color: white; margin: 5px;" onclick="useTemplate('score')">
+                            📊 成績表
+                        </button>
+                    </div>
+                    
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button class="btn download-btn" onclick="processManualEntry()">
+                            ✅ 處理資料
+                        </button>
+                        <button class="btn upload-btn" onclick="cancelManualEntry()">
+                            ❌ 取消
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('previewContainer').innerHTML = manualEntryHtml;
+        }
+
+        function useTemplate(type) {
+            let template = '';
+            switch(type) {
+                case 'expense':
+                    template = '早餐 85\n午餐 120\n晚餐 150\n交通費 50\n其他 30';
+                    break;
+                case 'inventory':
+                    template = '蘋果 25\n香蕉 18\n橘子 30\n葡萄 12\n鳳梨 8';
+                    break;
+                case 'score':
+                    template = '數學 88\n英文 92\n國文 85\n社會 78\n自然 90';
+                    break;
+            }
+            document.getElementById('manualText').value = template;
+        }
+
+        function processManualEntry() {
+            const manualText = document.getElementById('manualText').value.trim();
+            
+            if (!manualText) {
+                showError('請輸入要處理的內容！');
+                return;
+            }
+            
+            recognizedText = manualText;
+            processRecognizedText(manualText, 100); // 手動輸入視為100%信心度
+            
+            // 移除手動輸入介面
+            document.getElementById('manualEntryContainer').remove();
         }
 
         function showSuccess(message) {
